@@ -5,7 +5,7 @@
 
 ### Architecture
 - **Loop (`loop.py`)**: The main driver that orchestrates the experiment cycles.
-- **LLM Layer (`llm.py`)**: Handles interactions with Anthropic's Claude (default: `claude-sonnet-4-5`) for both success prediction and code generation.
+- **LLM Layer (`llm.py`)**: Handles interactions with LLM providers. Supports **Google Gemini** (default: `gemini-flash-latest`), **OpenAI** (model: `gpt-4o-mini`), and **Anthropic Claude** (model: `claude-sonnet-4-5`).
 - **Task Registry (`tasks.py`)**: Contains a curated set of broken Python functions with varying error types (off-by-one, logic errors, etc.) and associated test cases.
 - **Execution Engine (`runner.py`)**: Runs the generated code against tests in a isolated subprocess using `pytest`.
 - **Data Layer (`db.py`)**: Manages a SQLite database (`phase1.db`) to log tasks, predictions, and outcomes.
@@ -27,6 +27,13 @@ source .venv/bin/activate
 
 # 2. Install dependencies
 pip install -r requirements.txt
+
+# 3. Configure your provider (optional, defaults to gemini)
+export LLM_PROVIDER="openai"  # options: gemini, openai, anthropic
+export OPENAI_API_KEY="your-api-key-here"
+# OR
+export LLM_PROVIDER="gemini"
+export GEMINI_API_KEY="your-api-key-here"
 ```
 
 ### Running Experiments

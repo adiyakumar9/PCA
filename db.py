@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS outcomes (
     tests_failed      INTEGER DEFAULT 0,
     error_message     TEXT,
     execution_time_ms INTEGER,
+    experiment_group  TEXT DEFAULT 'control',
     created_at        TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (task_id) REFERENCES tasks(task_id)
 )
@@ -63,7 +64,7 @@ SELECT
     p.task_id,
     p.predicted_confidence,
     p.reasoning,
-    p.error_type_predicted,
+    p.error_type_predicted                                AS error_type,
     p.complexity_predicted,
     p.context_hash,
     o.actual_success,
@@ -71,6 +72,7 @@ SELECT
     o.tests_failed,
     o.error_message,
     o.execution_time_ms,
+    o.experiment_group,
     p.created_at                                          AS predicted_at,
     o.created_at                                          AS resolved_at,
     ABS(p.predicted_confidence - o.actual_success)        AS prediction_error,
@@ -97,6 +99,14 @@ def init_db():
         conn.execute(CREATE_TASKS)
         conn.execute(CREATE_PREDICTIONS)
         conn.execute(CREATE_OUTCOMES)
+        
+        # Migrations for Phase 2
+        try:
+            conn.execute("ALTER TABLE outcomes ADD COLUMN experiment_group TEXT DEFAULT 'control'")
+        except sqlite3.OperationalError:
+            pass # already exists
+            
+        conn.execute("DROP VIEW IF EXISTS logs")
         conn.execute(CREATE_LOGS_VIEW)
         conn.commit()
     print(f"Database ready at {DB_PATH.resolve()}")
@@ -139,22 +149,37 @@ def insert_prediction(run_id, task_id, predicted_confidence, reasoning=None,
 
 
 def insert_outcome(run_id, task_id, fixed_function, actual_success,
-                   tests_passed=0, tests_failed=0, error_message=None,
-                   execution_time_ms=None):
+                    tests_passed=0, tests_failed=0, error_message=None,
+                    execution_time_ms=None, group="control"):
     with get_connection() as conn:
         conn.execute(
             """INSERT INTO outcomes
                (run_id, task_id, fixed_function, actual_success, tests_passed,
-                tests_failed, error_message, execution_time_ms)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                tests_failed, error_message, execution_time_ms, experiment_group)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (run_id, task_id, fixed_function, int(actual_success),
-             tests_passed, tests_failed, error_message, execution_time_ms)
+             tests_passed, tests_failed, error_message, execution_time_ms, group)
         )
         conn.commit()
 
 
 # ── Reads ─────────────────────────────────────────────────────────────────────
 
+def get_error_history(error_type: str) -> dict:
+    """
+    Retrieve past performance for a specific error type from Phase 1.
+    """
+    with get_connection() as conn:
+        row = conn.execute("""
+            SELECT AVG(prediction_error) as avg_err, AVG(actual_success) as success_rate
+            FROM logs
+            WHERE error_type = ?
+        """, (error_type,)).fetchone()
+
+        if not row or row['avg_err'] is None:
+            return {"avg_err": 0.0, "success_rate": 1.0}
+
+        return dict(row)
 def get_all_logs() -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(

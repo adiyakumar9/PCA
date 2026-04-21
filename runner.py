@@ -3,6 +3,7 @@ runner.py — Write fixed code + tests to a temp file, run pytest, return result
 No imports from the rest of the system — keeps this module independently testable.
 """
 
+import sys
 import re
 import os
 import subprocess
@@ -47,7 +48,7 @@ def run_tests(fixed_function: str, test_code: str, timeout: int = 20) -> TestRes
 
         result = subprocess.run(
             [
-                "python", "-m", "pytest",
+                sys.executable, "-m", "pytest",
                 tmp.name,
                 "-v",           # verbose: one line per test
                 "--tb=short",   # short traceback on failure
@@ -107,3 +108,4 @@ def run_tests(fixed_function: str, test_code: str, timeout: int = 20) -> TestRes
             os.unlink(tmp.name)
         except OSError:
             pass
+pass

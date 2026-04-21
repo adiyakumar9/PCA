@@ -1,15 +1,18 @@
 """
 llm.py — Two LLM calls: predict_confidence() and generate_fix().
-Uses Anthropic Claude. Set ANTHROPIC_API_KEY in your environment.
+Supports Anthropic Claude, Google Gemini, and OpenAI.
+Configure using LLM_PROVIDER="anthropic", "gemini", or "openai".
 """
 
 import os
 import json
 import re
-from anthropic import Anthropic
 
-client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-MODEL = "claude-sonnet-4-5"
+# LLM Provider configuration
+PROVIDER = os.environ.get("LLM_PROVIDER", "gemini").lower()
+ANTHROPIC_MODEL = "claude-sonnet-4-5"
+GEMINI_MODEL = "gemini-flash-latest"
+OPENAI_MODEL = "gpt-4o-mini"
 
 # ── System Prompts ────────────────────────────────────────────────────────────
 
@@ -36,14 +39,71 @@ Rules (strictly follow all of them):
 - Make the minimal change needed to fix the bug"""
 
 
+# ── Client Initialization ─────────────────────────────────────────────────────
+
+def get_completion(system_prompt, user_prompt, max_tokens=800):
+    """
+    Unified completion interface for Claude, Gemini, and OpenAI.
+    """
+    if PROVIDER == "anthropic":
+        from anthropic import Anthropic
+        client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        response = client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}]
+        )
+        return response.content[0].text.strip()
+
+    elif PROVIDER == "openai":
+        from openai import OpenAI
+        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        
+        is_json = "JSON" in system_prompt
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            response_format={"type": "json_object"} if is_json else None,
+            temperature=0.0
+        )
+        return response.choices[0].message.content.strip()
+
+    elif PROVIDER == "gemini":
+        import google.generativeai as genai
+        genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+        
+        # Use JSON mode if requested by the prompt containing "JSON"
+        is_json = "JSON" in system_prompt
+        config = genai.types.GenerationConfig(
+            max_output_tokens=max_tokens,
+            temperature=0.0,
+            response_mime_type="application/json" if is_json else "text/plain"
+        )
+        
+        model = genai.GenerativeModel(
+            model_name=GEMINI_MODEL,
+            system_instruction=system_prompt
+        )
+        response = model.generate_content(
+            user_prompt,
+            generation_config=config
+        )
+        return response.text.strip()
+
+    else:
+        raise ValueError(f"Unsupported LLM provider: {PROVIDER}")
+
+
 # ── Core Functions ────────────────────────────────────────────────────────────
 
 def predict_confidence(broken_function: str, test_code: str) -> dict:
     """
     Ask the LLM: how confident are you that you can fix this?
-
-    Returns:
-        dict with keys: confidence (float), reasoning, error_type, complexity
     """
     prompt = (
         f"Broken function:\n```python\n{broken_function}\n```\n\n"
@@ -52,29 +112,21 @@ def predict_confidence(broken_function: str, test_code: str) -> dict:
         "Return only JSON."
     )
 
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=256,
-        system=PREDICTION_SYSTEM,
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    raw = response.content[0].text.strip()
-
-    # Strip accidental markdown fences
-    raw = re.sub(r"```(?:json)?\n?", "", raw).strip().rstrip("`")
-
     try:
+        raw = get_completion(PREDICTION_SYSTEM, prompt, max_tokens=256)
+        
+        # Strip accidental markdown fences
+        raw = re.sub(r"```(?:json)?\n?", "", raw).strip().rstrip("`")
+        
         result = json.loads(raw)
         result["confidence"] = float(max(0.0, min(1.0, result.get("confidence", 0.5))))
         return result
-    except (json.JSONDecodeError, ValueError, KeyError):
-        # Graceful fallback: try regex extraction
-        match = re.search(r'"confidence"\s*:\s*([\d.]+)', raw)
-        confidence = float(match.group(1)) if match else 0.5
+    except (json.JSONDecodeError, ValueError, KeyError, Exception) as exc:
+        # Fallback for parsing errors or API failures
+        print(f" [LLM Warning] Parsing error: {exc}")
         return {
-            "confidence":  confidence,
-            "reasoning":   raw[:120],
+            "confidence":  0.5,
+            "reasoning":   "Fallback confidence due to LLM error or parse failure.",
             "error_type":  "other",
             "complexity":  "medium",
         }
@@ -82,30 +134,40 @@ def predict_confidence(broken_function: str, test_code: str) -> dict:
 
 def generate_fix(broken_function: str, test_code: str) -> str:
     """
-    Ask the LLM to fix the broken function.
+    Standard fix generation (Control group).
+    """
+    return _generate_fix_internal(broken_function, test_code, FIX_SYSTEM)
 
-    Returns:
-        str — the fixed function code (no markdown, just Python)
+
+def generate_fix_with_belief(broken_function: str, test_code: str, belief_string: str) -> str:
+    """
+    Fix generation with injected belief (Belief group).
+    """
+    system_prompt = FIX_SYSTEM + f"\n\nSELF-CORRECTION HINT: {belief_string}"
+    return _generate_fix_internal(broken_function, test_code, system_prompt)
+
+
+def _generate_fix_internal(broken_function: str, test_code: str, system_prompt: str) -> str:
+    """
+    Common logic for fix generation.
     """
     prompt = (
         f"Broken function:\n{broken_function}\n\n"
         f"Test that must pass:\n{test_code}\n\n"
-        "Return only the fixed function."
+        "Return ONLY the fixed function, no other text."
     )
 
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=800,
-        system=FIX_SYSTEM,
-        messages=[{"role": "user", "content": prompt}]
-    )
+    fixed = get_completion(system_prompt, prompt, max_tokens=800)
 
-    fixed = response.content[0].text.strip()
-
-    # Strip markdown code fences if the model added them anyway
-    if fixed.startswith("```"):
-        lines = fixed.split("\n")
-        end = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
-        fixed = "\n".join(lines[1:end]).strip()
+    # Robust cleaning of markdown blocks
+    if "```" in fixed:
+        # Extract content between first and last triple backticks
+        match = re.search(r"```(?:python)?\n?(.*?)\n?```", fixed, re.DOTALL)
+        if match:
+            fixed = match.group(1).strip()
+        else:
+            # Fallback: remove lines starting with ```
+            lines = [l for l in fixed.split("\n") if not l.strip().startswith("```")]
+            fixed = "\n".join(lines).strip()
 
     return fixed
