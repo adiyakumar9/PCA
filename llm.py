@@ -38,6 +38,12 @@ Rules (strictly follow all of them):
 - Keep the exact same function name and signature
 - Make the minimal change needed to fix the bug"""
 
+REFLECTION_SYSTEM = """You are a software engineering researcher. Analyze your past error history 
+and the current broken code. Write a short (2-3 sentence) strategy on how you will avoid 
+your typical mistakes (like off-by-one errors or logic traps) in this specific task.
+
+Be very specific about which lines or conditions you will check twice."""
+
 
 # ── Client Initialization ─────────────────────────────────────────────────────
 
@@ -144,6 +150,27 @@ def generate_fix_with_belief(broken_function: str, test_code: str, belief_string
     Fix generation with injected belief (Belief group).
     """
     system_prompt = FIX_SYSTEM + f"\n\nSELF-CORRECTION HINT: {belief_string}"
+    return _generate_fix_internal(broken_function, test_code, system_prompt)
+
+
+def generate_reflection(broken_function: str, test_code: str, history_string: str) -> str:
+    """
+    Ask the LLM to reflect on its history and the current task.
+    """
+    prompt = (
+        f"Broken function:\n{broken_function}\n\n"
+        f"Test code:\n{test_code}\n\n"
+        f"Your History:\n{history_string}\n\n"
+        "Explain your specific strategy to avoid repeating these mistakes."
+    )
+    return get_completion(REFLECTION_SYSTEM, prompt, max_tokens=300)
+
+
+def generate_fix_with_reflection(broken_function: str, test_code: str, reflection_text: str) -> str:
+    """
+    Fix generation with the LLM's own reflection injected.
+    """
+    system_prompt = FIX_SYSTEM + f"\n\nYOUR REFLECTION & PLAN:\n{reflection_text}"
     return _generate_fix_internal(broken_function, test_code, system_prompt)
 
 

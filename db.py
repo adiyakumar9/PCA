@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS outcomes (
     error_message     TEXT,
     execution_time_ms INTEGER,
     experiment_group  TEXT DEFAULT 'control',
+    reflection_text   TEXT,
     created_at        TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (task_id) REFERENCES tasks(task_id)
 )
@@ -73,6 +74,7 @@ SELECT
     o.error_message,
     o.execution_time_ms,
     o.experiment_group,
+    o.reflection_text,
     p.created_at                                          AS predicted_at,
     o.created_at                                          AS resolved_at,
     ABS(p.predicted_confidence - o.actual_success)        AS prediction_error,
@@ -100,11 +102,15 @@ def init_db():
         conn.execute(CREATE_PREDICTIONS)
         conn.execute(CREATE_OUTCOMES)
         
-        # Migrations for Phase 2
+        # Migrations for Phase 2 & 3
         try:
             conn.execute("ALTER TABLE outcomes ADD COLUMN experiment_group TEXT DEFAULT 'control'")
         except sqlite3.OperationalError:
-            pass # already exists
+            pass 
+        try:
+            conn.execute("ALTER TABLE outcomes ADD COLUMN reflection_text TEXT")
+        except sqlite3.OperationalError:
+            pass 
             
         conn.execute("DROP VIEW IF EXISTS logs")
         conn.execute(CREATE_LOGS_VIEW)
@@ -150,15 +156,15 @@ def insert_prediction(run_id, task_id, predicted_confidence, reasoning=None,
 
 def insert_outcome(run_id, task_id, fixed_function, actual_success,
                     tests_passed=0, tests_failed=0, error_message=None,
-                    execution_time_ms=None, group="control"):
+                    execution_time_ms=None, group="control", reflection_text=None):
     with get_connection() as conn:
         conn.execute(
             """INSERT INTO outcomes
                (run_id, task_id, fixed_function, actual_success, tests_passed,
-                tests_failed, error_message, execution_time_ms, experiment_group)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                tests_failed, error_message, execution_time_ms, experiment_group, reflection_text)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (run_id, task_id, fixed_function, int(actual_success),
-             tests_passed, tests_failed, error_message, execution_time_ms, group)
+             tests_passed, tests_failed, error_message, execution_time_ms, group, reflection_text)
         )
         conn.commit()
 
